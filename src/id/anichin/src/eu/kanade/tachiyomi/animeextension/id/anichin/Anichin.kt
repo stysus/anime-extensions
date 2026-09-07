@@ -33,6 +33,7 @@ import okhttp3.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.util.concurrent.TimeUnit
 
 class Anichin :
     AnimeStream(
@@ -99,14 +100,22 @@ class Anichin :
     }
 
     // ============================ Video Links =============================
+    private val timeoutClient by lazy {
+        client.newBuilder()
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(5, TimeUnit.SECONDS)
+            .callTimeout(5, TimeUnit.SECONDS)
+            .build()
+    }
+
     private val okruExtractor by lazy { OkruExtractor(client) }
     private val vidHideExtractor by lazy { VidHideExtractor(client, headers) }
     private val streamWishExtractor by lazy { StreamWishExtractor(client, headers) }
-    private val doodExtractor by lazy { DoodExtractor(client) }
+    private val doodExtractor by lazy { DoodExtractor(timeoutClient) }
     private val rumbleExtractor by lazy { RumbleExtractor(client, headers) }
-    private val streamTapeExtractor by lazy { StreamTapeExtractor(client) }
-    private val mp4uploadExtractor by lazy { Mp4uploadExtractor(client) }
-    private val yourUploadExtractor by lazy { YourUploadExtractor(client) }
+    private val streamTapeExtractor by lazy { StreamTapeExtractor(timeoutClient) }
+    private val mp4uploadExtractor by lazy { Mp4uploadExtractor(timeoutClient) }
+    private val yourUploadExtractor by lazy { YourUploadExtractor(timeoutClient) }
     private val playlistUtils by lazy { PlaylistUtils(client, headers) }
 
     private data class MirrorItem(val name: String, val url: String)
@@ -157,12 +166,19 @@ class Anichin :
 
         val allItems = optionElements.mapNotNull { element ->
             val name = element.text()
-            val url = runBlocking { getHosterUrl(element) }
+            val encodedData = when (element.tagName()) {
+                "option" -> element.attr("value")
+                "a" -> element.attr("data-em")
+                else -> ""
+            }
+            val url = runBlocking { getHosterUrl(encodedData) }
             if (url.isBlank()) null else MirrorItem(name, url)
         }
 
-        val filtered = allItems.filter { isHostEnabled(it.name, it.url) }
-        val items = if (filtered.isNotEmpty()) filtered else allItems
+        val items = allItems.filter { isHostEnabled(it.name, it.url) }
+        if (allItems.isNotEmpty() && items.isEmpty()) {
+            return emptyList()
+        }
 
         var videos = items.parallelCatchingFlatMapBlocking { item ->
             withTimeoutOrNull(5000L) {
@@ -174,10 +190,14 @@ class Anichin :
 
         if (videos.isEmpty()) {
             val defaultIframe = doc.selectFirst("#embed_holder iframe")?.safeUrl()
-            if (!defaultIframe.isNullOrBlank()) {
-                videos = runCatching {
-                    runBlocking { getVideoList(defaultIframe, "Default") }
-                }.getOrDefault(emptyList())
+            if (!defaultIframe.isNullOrBlank() && isHostEnabled("Default", defaultIframe)) {
+                videos = runBlocking {
+                    withTimeoutOrNull(5000L) {
+                        runCatching {
+                            getVideoList(defaultIframe, "Default")
+                        }.getOrDefault(emptyList())
+                    }
+                } ?: emptyList()
             }
         }
 
