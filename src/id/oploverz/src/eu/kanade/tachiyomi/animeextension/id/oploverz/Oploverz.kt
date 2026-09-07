@@ -3,6 +3,7 @@ package eu.kanade.tachiyomi.animeextension.id.oploverz
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
 import aniyomi.lib.dailymotionextractor.DailymotionExtractor
+import aniyomi.lib.playlistutils.PlaylistUtils
 import aniyomi.lib.universalextractor.UniversalExtractor
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
@@ -11,11 +12,14 @@ import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.network.GET
+import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.lib.autoUnpacker
 import keiyoushi.utils.AnimeHttpLegacySource
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parallelCatchingFlatMapBlocking
 import keiyoushi.utils.parseAs
+import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
@@ -34,7 +38,7 @@ class Oploverz :
 
     // ============================== Popular ===============================
 
-    override fun popularAnimeRequest(page: Int): Request = GET("$apiUrl/api/series?hot=true&page=$page&pageSize=$ANIME_PAGE_SIZE", headers)
+    override fun popularAnimeRequest(page: Int): Request = GET("$apiUrl/api/series?page=$page&pageSize=$ANIME_PAGE_SIZE", headers)
 
     override fun popularAnimeParse(response: Response): AnimesPage {
         val (animes, hasNextPage) = response.parseAs<SeriesListResponseDto>().toAnimesPage()
@@ -43,9 +47,12 @@ class Oploverz :
 
     // =============================== Latest ===============================
 
-    override fun latestUpdatesRequest(page: Int): Request = GET("$apiUrl/api/series?page=$page&pageSize=$ANIME_PAGE_SIZE", headers)
+    override fun latestUpdatesRequest(page: Int): Request = GET("$apiUrl/api/episodes?page=$page&pageSize=$ANIME_PAGE_SIZE&sort=latest", headers)
 
-    override fun latestUpdatesParse(response: Response): AnimesPage = popularAnimeParse(response)
+    override fun latestUpdatesParse(response: Response): AnimesPage {
+        val (animes, hasNextPage) = response.parseAs<LatestEpisodesResponseDto>().toAnimesPage()
+        return AnimesPage(animes, hasNextPage)
+    }
 
     // =============================== Search ===============================
 
@@ -91,6 +98,7 @@ class Oploverz :
 
     private val dailymotionExtractor by lazy { DailymotionExtractor(client, headers) }
     private val universalExtractor by lazy { UniversalExtractor(client) }
+    private val playlistUtils by lazy { PlaylistUtils(client, headers) }
 
     private val videoHeaders by lazy { headersBuilder().set("Referer", "$baseUrl/").build() }
 
@@ -113,7 +121,9 @@ class Oploverz :
         return when {
             "dailymotion" in url -> dailymotionExtractor.videosFromUrl(url, "$prefix Dailymotion - ")
             "filedon.co" in url -> getFiledonVideo(url, prefix)
-            else -> universalExtractor.videosFromUrl(url, videoHeaders, prefix)
+            else -> getXFileSharingVideos(url, prefix).ifEmpty {
+                universalExtractor.videosFromUrl(url, videoHeaders, prefix)
+            }
         }
     }
 
@@ -123,6 +133,29 @@ class Oploverz :
         val videoUrl = dataPage.parseAs<FiledonPageDto>().videoUrl
         return listOf(Video(videoUrl, quality, videoUrl, videoHeaders))
     }
+
+    // Handles XFileSharing-style hosts (e.g. upbolt.to): the embed page auto-submits
+    // a form to /dl, whose response contains a (usually packed) player script with the source.
+    private fun getXFileSharingVideos(url: String, quality: String): List<Video> = runCatching {
+        val embedUrl = url.toHttpUrl()
+        val code = embedUrl.pathSegments.last()
+        val origin = "${embedUrl.scheme}://${embedUrl.host}"
+        val form = FormBody.Builder()
+            .add("op", "embed")
+            .add("file_code", code)
+            .add("auto", "1")
+            .add("referer", "")
+            .build()
+        val dlHeaders = videoHeaders.newBuilder().set("Referer", url).build()
+        val body = client.newCall(POST("$origin/dl", dlHeaders, form)).execute().body.string()
+        val unpacked = autoUnpacker(body) ?: body
+        val videoUrl = XFS_SOURCE_REGEX.find(unpacked)?.groupValues?.get(1) ?: return@runCatching emptyList()
+        if ("m3u8" in videoUrl) {
+            playlistUtils.extractFromHls(videoUrl, referer = url, videoNameGen = { "$quality - $it" })
+        } else {
+            listOf(Video(videoUrl, quality, videoUrl, dlHeaders))
+        }
+    }.getOrDefault(emptyList())
 
     // ============================= Utilities ==============================
 
@@ -156,6 +189,8 @@ class Oploverz :
     companion object {
         private const val ANIME_PAGE_SIZE = 20
         private const val EPISODE_PAGE_SIZE = 2000
+
+        private val XFS_SOURCE_REGEX = Regex("""file\s*:\s*["']([^"']+)["']""")
 
         private const val PREF_QUALITY_KEY = "preferred_quality"
         private const val PREF_QUALITY_TITLE = "Preferred quality"

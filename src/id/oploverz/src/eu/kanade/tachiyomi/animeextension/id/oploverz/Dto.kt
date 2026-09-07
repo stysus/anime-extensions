@@ -36,7 +36,7 @@ class SeriesDto(
     private val poster: String? = null,
     private val description: String? = null,
     private val status: String? = null,
-    private val genres: List<GenreDto> = emptyList(),
+    private val genres: List<GenreDto>? = null,
     private val studio: StudioDto? = null,
 ) {
     fun toSAnime(): SAnime {
@@ -45,7 +45,7 @@ class SeriesDto(
         anime.title = title
         anime.thumbnail_url = poster
         anime.description = description
-        anime.genre = genres.joinToString { it.name }
+        anime.genre = genres?.joinToString { it.name }
         anime.author = studio?.name
         anime.status = when (status?.lowercase()) {
             "ongoing" -> SAnime.ONGOING
@@ -55,6 +55,20 @@ class SeriesDto(
         return anime
     }
 }
+
+@Serializable
+class LatestEpisodesResponseDto(
+    private val data: List<LatestEpisodeDto>,
+    private val meta: MetaDto,
+) {
+    fun toAnimesPage(): Pair<List<SAnime>, Boolean> = Pair(
+        data.map { it.series.toSAnime() }.distinctBy { it.url },
+        meta.hasNextPage,
+    )
+}
+
+@Serializable
+class LatestEpisodeDto(val series: SeriesDto)
 
 @Serializable
 class GenreDto(val name: String)
@@ -90,11 +104,11 @@ class EpisodeDto(
 
 @Serializable
 class EpisodeDetailResponseDto(private val data: EpisodeDetailDto) {
-    val streams get() = data.streamUrl
+    val streams get() = data.streamUrl ?: emptyList()
 }
 
 @Serializable
-class EpisodeDetailDto(val streamUrl: List<StreamDto> = emptyList())
+class EpisodeDetailDto(val streamUrl: List<StreamDto>? = null)
 
 @Serializable
 class StreamDto(val source: String, val url: String)
