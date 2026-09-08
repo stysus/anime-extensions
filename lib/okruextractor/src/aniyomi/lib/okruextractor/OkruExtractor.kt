@@ -48,19 +48,18 @@ class OkruExtractor(private val client: OkHttpClient, private val headers: Heade
         ?.let { "$prefix $this" }
         ?: this
 
-    private fun String.extractLink(attr: String) = Regex("""$attr\\*":\\*"([^\\"]+)""").find(this)?.groupValues?.get(1)
-        ?.replace("\\\\u0026", "&")
-        ?.replace("\\u0026", "&")
+    private fun String.extractLink(attr: String) = Regex("""$attr(\\*")\s*:\s*\1(.*?)\1""").find(this)?.groupValues?.get(2)
+        ?.replace(Regex("""\\+u0026"""), "&")
         ?: ""
 
     private fun videosFromJson(videoString: String, prefix: String = "", fixQualities: Boolean = true): List<Video> {
-        val arrayData = Regex("""videos\\*":\\*\[(.*?)(?:\]|$)""").find(videoString)?.groupValues?.get(1)
+        val arrayData = Regex("""videos\\*"\s*:\s*\\*\[(.*?)(?:\]|$)""").find(videoString)?.groupValues?.get(1)
             ?: return emptyList()
 
         return arrayData.split(Regex("""\{(\\)?"name(\\)?"\s*:\s*(\\)?"""")).reversed().mapNotNull { data ->
             val videoUrl = data.extractLink("url")
             val quality = data.extractLink("name").ifEmpty {
-                data.substringBefore("\"").substringBefore("\\\"")
+                data.substringBefore("\\\"").substringBefore("\"")
             }.let {
                 if (fixQualities) fixQuality(it) else it
             }
