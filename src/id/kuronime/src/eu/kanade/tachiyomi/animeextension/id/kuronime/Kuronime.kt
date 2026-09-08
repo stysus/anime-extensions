@@ -221,7 +221,7 @@ class Kuronime :
                 val reqBody = SourceRequestDto(id = encryptedId).toJsonRequestBody()
                 val apiRes = client.newCall(POST(SOURCES_API_URL, headers = apiHeaders, body = reqBody))
                     .execute()
-                    .parseAs<SourceResponseDto>()
+                    .use { it.parseAs<SourceResponseDto>() }
 
                 val mirrorJson = String(Base64.decode(apiRes.mirror, Base64.DEFAULT), Charsets.UTF_8)
                 val cryptoDto = mirrorJson.parseAs<CryptoDto>()
