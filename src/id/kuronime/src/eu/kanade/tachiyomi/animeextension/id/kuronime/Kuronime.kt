@@ -26,6 +26,7 @@ import keiyoushi.utils.toJsonRequestBody
 import keiyoushi.utils.tryParse
 import kotlinx.serialization.Serializable
 import okhttp3.Headers
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.Jsoup
@@ -75,7 +76,12 @@ class Kuronime :
 
     // =============================== Search ===============================
 
-    override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request = GET("$baseUrl/page/$page/?s=$query", headers)
+    override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
+        val url = "$baseUrl/page/$page/".toHttpUrl().newBuilder()
+            .addQueryParameter("s", query)
+            .build()
+        return GET(url, headers)
+    }
 
     override fun searchAnimeSelector(): String = "div.listupd article"
 
@@ -195,10 +201,13 @@ class Kuronime :
         val document = response.asJsoup()
         val html = document.html()
 
-        val hosterSelection = preferences.getStringSet(
-            PREF_HOSTER_KEY,
-            PREF_HOSTER_DEFAULT,
-        ) ?: PREF_HOSTER_DEFAULT
+        val storedHosts = preferences.getStringSet(PREF_HOSTER_KEY, null)
+        val hosterSelection = if (storedHosts == null || storedHosts.any { it in DEPRECATED_HOSTS }) {
+            preferences.edit().putStringSet(PREF_HOSTER_KEY, PREF_HOSTER_DEFAULT).apply()
+            PREF_HOSTER_DEFAULT
+        } else {
+            storedHosts
+        }
 
         val videoList = mutableListOf<Video>()
 
@@ -279,7 +288,8 @@ class Kuronime :
             doodExtractor.videosFromUrl(url, quality)
         }
         ("yourupload" in server || "yourupload" in url) && hosterSelection.contains("yourupload") -> {
-            yourUploadExtractor.videoFromUrl(url, headers, name = "YourUpload", prefix = "$quality - ")
+            val yourUploadHeaders = headers.newBuilder().removeAll("Referer").build()
+            yourUploadExtractor.videoFromUrl(url, yourUploadHeaders, name = "YourUpload", prefix = "$quality - ")
         }
         else -> emptyList()
     }
@@ -390,6 +400,7 @@ class Kuronime :
         private val PREF_HOSTER_ENTRIES = arrayOf("PixelDrain", "Mp4Upload", "VidHide/FileLions", "YourUpload", "DoodStream")
         private val PREF_HOSTER_VALUES = arrayOf("pixeldrain", "mp4upload", "vidhide", "yourupload", "doodstream")
         private val PREF_HOSTER_DEFAULT = setOf("pixeldrain", "mp4upload", "vidhide", "yourupload", "doodstream")
+        private val DEPRECATED_HOSTS = setOf("animeku", "streamlare", "hxfile", "linkbox")
     }
 }
 
