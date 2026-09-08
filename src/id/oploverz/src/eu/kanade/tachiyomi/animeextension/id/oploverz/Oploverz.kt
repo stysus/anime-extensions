@@ -122,7 +122,7 @@ class Oploverz :
             "dailymotion" in url -> dailymotionExtractor.videosFromUrl(url, "$prefix Dailymotion - ")
             "filedon.co" in url -> getFiledonVideo(url, prefix)
             else -> getXFileSharingVideos(url, prefix).ifEmpty {
-                universalExtractor.videosFromUrl(url, videoHeaders, prefix)
+                universalExtractor.videosFromUrl(url, videoHeaders, prefix = prefix)
             }
         }
     }
@@ -151,7 +151,13 @@ class Oploverz :
         val unpacked = autoUnpacker(body) ?: body
         val videoUrl = XFS_SOURCE_REGEX.find(unpacked)?.groupValues?.get(1) ?: return@runCatching emptyList()
         if ("m3u8" in videoUrl) {
-            playlistUtils.extractFromHls(videoUrl, referer = url, videoNameGen = { "$quality - $it" })
+            playlistUtils.extractFromHls(
+                playlistUrl = videoUrl,
+                referer = url,
+                masterHeaders = dlHeaders,
+                videoHeaders = dlHeaders,
+                videoNameGen = { "$quality - $it" },
+            )
         } else {
             listOf(Video(videoUrl, quality, videoUrl, dlHeaders))
         }
