@@ -56,11 +56,9 @@ class OkruExtractor(private val client: OkHttpClient, private val headers: Heade
         val arrayData = Regex("""videos\\*"\s*:\s*\\*\[(.*?)(?:\]|$)""").find(videoString)?.groupValues?.get(1)
             ?: return emptyList()
 
-        return arrayData.split(Regex("""\{(\\)?"name(\\)?"\s*:\s*(\\)?"""")).reversed().mapNotNull { data ->
+        return arrayData.split(Regex("""\{\s*\\*"name\\*"\s*:\s*\\*"""")).reversed().mapNotNull { data ->
             val videoUrl = data.extractLink("url")
-            val quality = data.extractLink("name").ifEmpty {
-                data.substringBefore("\\\"").substringBefore("\"")
-            }.let {
+            val quality = data.substringBefore("\"").trimEnd('\\').let {
                 if (fixQualities) fixQuality(it) else it
             }
             val videoQuality = "Okru:$quality".addPrefix(prefix)
