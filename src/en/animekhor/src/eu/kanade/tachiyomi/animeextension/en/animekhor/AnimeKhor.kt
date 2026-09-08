@@ -10,9 +10,16 @@ import aniyomi.lib.vidhideextractor.VidHideExtractor
 import eu.kanade.tachiyomi.animeextension.en.animekhor.extractors.TurbovidExtractor
 import eu.kanade.tachiyomi.animeextension.en.animekhor.extractors.VidaraExtractor
 import eu.kanade.tachiyomi.animesource.model.SAnime
+import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.multisrc.animestream.AnimeStream
+import keiyoushi.utils.tryParse
+import keiyoushi.utils.useAsJsoup
+import okhttp3.Response
 import org.jsoup.nodes.Document
+import java.text.SimpleDateFormat
+import java.util.Locale
+import kotlin.math.abs
 
 class AnimeKhor :
     AnimeStream(
@@ -24,6 +31,28 @@ class AnimeKhor :
 
     override fun animeDetailsParse(document: Document): SAnime = super.animeDetailsParse(document).apply {
         description = getAnimeDescription(document)
+    }
+
+    // ============================== Episodes ==============================
+
+    private val isoDateFormatter by lazy {
+        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.ENGLISH)
+    }
+
+    override fun episodeListParse(response: Response): List<SEpisode> {
+        val doc = response.useAsJsoup()
+        val episodes = doc.select(episodeListSelector()).map(::episodeFromElement)
+        val firstEp = episodes.firstOrNull() ?: return episodes
+        val latestUploadDate = doc.selectFirst("time[itemprop=dateModified]")?.attr("datetime")
+            ?.let { isoDateFormatter.tryParse(it) }
+            ?: 0L
+        if (latestUploadDate > 0L) {
+            val diff = abs(latestUploadDate - firstEp.date_upload)
+            if (firstEp.date_upload == 0L || diff < 86_400_000L * 2) {
+                firstEp.date_upload = latestUploadDate
+            }
+        }
+        return episodes
     }
 
     // ============================ Extractors ==============================

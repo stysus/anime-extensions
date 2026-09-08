@@ -12,6 +12,7 @@ import keiyoushi.utils.useAsJsoup
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import okhttp3.Headers
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 
 class VidaraExtractor(private val client: OkHttpClient, private val headers: Headers) {
@@ -21,11 +22,16 @@ class VidaraExtractor(private val client: OkHttpClient, private val headers: Hea
     suspend fun videosFromUrl(url: String, prefix: String = ""): List<Video> {
         val filecode = FILECODE_REGEX.find(url)?.groupValues?.get(1) ?: return emptyList()
 
+        val defaultOrigin = runCatching {
+            val httpUrl = url.toHttpUrl()
+            "${httpUrl.scheme}://${httpUrl.host}"
+        }.getOrDefault(if (url.contains("vidara.to")) "https://vidara.to" else "https://vidvara.fit")
+
         val origin = runCatching {
             val doc = client.newCall(GET(url, headers)).awaitSuccess().useAsJsoup()
             val script = doc.selectFirst("script:containsData(MIRROR_ORIGIN)")?.data().orEmpty()
             ORIGIN_REGEX.find(script)?.groupValues?.get(1)
-        }.getOrNull() ?: "https://vidvara.fit"
+        }.getOrNull() ?: defaultOrigin
 
         val apiUrl = "$origin/api/stream"
         val requestBody = VidaraRequest(filecode, "web").toJsonRequestBody()
