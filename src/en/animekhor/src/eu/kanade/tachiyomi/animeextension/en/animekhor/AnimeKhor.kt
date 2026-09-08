@@ -35,16 +35,12 @@ class AnimeKhor :
 
     // ============================== Episodes ==============================
 
-    private val isoDateFormatter by lazy {
-        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.ENGLISH)
-    }
-
     override fun episodeListParse(response: Response): List<SEpisode> {
         val doc = response.useAsJsoup()
         val episodes = doc.select(episodeListSelector()).map(::episodeFromElement)
         val firstEp = episodes.firstOrNull() ?: return episodes
         val latestUploadDate = doc.selectFirst("time[itemprop=dateModified]")?.attr("datetime")
-            ?.let { isoDateFormatter.tryParse(it) }
+            ?.let { SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.ENGLISH).tryParse(it) }
             ?: 0L
         if (latestUploadDate > 0L) {
             val diff = abs(latestUploadDate - firstEp.date_upload)
