@@ -27,6 +27,7 @@ import keiyoushi.utils.tryParse
 import keiyoushi.utils.useAsJsoup
 import okhttp3.FormBody
 import okhttp3.Headers
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import okhttp3.Response
 import org.json.JSONObject
@@ -273,13 +274,18 @@ class OtakuDesu :
             extractDesuStream(quality, link)
         }
 
-        link.endsWith(".mp4") || link.endsWith(".m3u8") || link.contains(".mp4?") -> {
+        isDirectMedia(link) -> {
             listOf(Video(link, "Direct - $quality", link, headers))
         }
 
         else -> {
             extractDesuStream(quality, link)
         }
+    }
+
+    private fun isDirectMedia(url: String): Boolean {
+        val path = url.toHttpUrlOrNull()?.encodedPath ?: url.substringBefore('?')
+        return path.endsWith(".mp4", ignoreCase = true) || path.endsWith(".m3u8", ignoreCase = true)
     }
 
     private suspend fun extractFiledon(quality: String, link: String): List<Video> = try {
