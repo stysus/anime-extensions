@@ -9,8 +9,10 @@ import aniyomi.lib.streamwishextractor.StreamWishExtractor
 import aniyomi.lib.vidhideextractor.VidHideExtractor
 import eu.kanade.tachiyomi.animeextension.en.animekhor.extractors.TurbovidExtractor
 import eu.kanade.tachiyomi.animeextension.en.animekhor.extractors.VidaraExtractor
+import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.multisrc.animestream.AnimeStream
+import org.jsoup.nodes.Document
 
 class AnimeKhor :
     AnimeStream(
@@ -18,6 +20,12 @@ class AnimeKhor :
         "AnimeKhor",
         "https://animekhor.org",
     ) {
+    // =========================== Anime Details ============================
+
+    override fun animeDetailsParse(document: Document): SAnime = super.animeDetailsParse(document).apply {
+        description = getAnimeDescription(document)
+    }
+
     // ============================ Extractors ==============================
 
     private val dailymotionExtractor by lazy { DailymotionExtractor(client, headers) }
