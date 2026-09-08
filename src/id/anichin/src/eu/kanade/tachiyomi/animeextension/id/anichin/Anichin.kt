@@ -211,7 +211,7 @@ class Anichin :
             }.getOrNull().orEmpty()
             Jsoup.parse(decoded)
         } else {
-            client.newCall(GET(encodedData, headers)).awaitSuccess().useAsJsoup()
+            timeoutClient.newCall(GET(encodedData, headers)).awaitSuccess().useAsJsoup()
         }
         doc.selectFirst(getEpisodeIframeSelector())?.safeUrl()
             ?: doc.selectFirst("meta[content~=.][itemprop=embedUrl]")?.safeUrl("content")
@@ -302,7 +302,7 @@ class Anichin :
             val turboHeaders = headers.newBuilder()
                 .set("Referer", baseUrl)
                 .build()
-            val doc = client.newCall(GET(url, turboHeaders)).awaitSuccess().useAsJsoup()
+            val doc = timeoutClient.newCall(GET(url, turboHeaders)).awaitSuccess().useAsJsoup()
             val m3u8Url = doc.selectFirst("div#video_player, div[data-hash]")?.attr("data-hash")
                 ?: Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""").find(doc.html())?.value
                 ?: return emptyList()
@@ -315,17 +315,17 @@ class Anichin :
         }.getOrDefault(emptyList())
     }
 
-    private fun extractDailymotion(videoId: String): List<Video> {
+    private suspend fun extractDailymotion(videoId: String): List<Video> {
         return runCatching {
             val dmHeaders = headers.newBuilder()
                 .set("Referer", "https://www.dailymotion.com/")
                 .build()
             val embedUrl = "https://www.dailymotion.com/embed/video/$videoId"
-            val html = client.newCall(GET(embedUrl, dmHeaders)).execute().use { it.body.string() }
+            val html = timeoutClient.newCall(GET(embedUrl, dmHeaders)).awaitSuccess().use { it.body.string() }
             val v1st = Regex("""\"v1st\":\"([^\"]+)\"""").find(html)?.groupValues?.get(1).orEmpty()
             val ts = Regex("""\"ts\":(\d+)""").find(html)?.groupValues?.get(1).orEmpty()
             val jsonUrl = "https://www.dailymotion.com/player/metadata/video/$videoId?locale=en-US&dmV1st=$v1st&dmTs=$ts&is_native_app=0"
-            val jsonStr = client.newCall(GET(jsonUrl, dmHeaders)).execute().use { it.body.string() }
+            val jsonStr = timeoutClient.newCall(GET(jsonUrl, dmHeaders)).awaitSuccess().use { it.body.string() }
             val jsonObj = json.parseToJsonElement(jsonStr).jsonObject
             val qualities = jsonObj["qualities"]?.jsonObject ?: return emptyList()
             val autoList = qualities["auto"]?.jsonArray ?: return emptyList()
