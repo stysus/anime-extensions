@@ -3,9 +3,8 @@ package eu.kanade.tachiyomi.animeextension.en.animekhor.extractors
 import aniyomi.lib.playlistutils.PlaylistUtils
 import eu.kanade.tachiyomi.animesource.model.Track
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.awaitSuccess
 import keiyoushi.utils.bodyString
+import keiyoushi.utils.get
 import okhttp3.Headers
 import okhttp3.OkHttpClient
 
@@ -17,7 +16,7 @@ class TurboVidExtractor(private val client: OkHttpClient, private val headers: H
         val pageHeaders = headers.newBuilder()
             .set("Referer", "https://animekhor.org/")
             .build()
-        val html = client.newCall(GET(url, pageHeaders)).awaitSuccess().bodyString()
+        val html = client.get(url, pageHeaders).bodyString()
 
         var urlPlay = URL_PLAY_REGEX.find(html)?.groupValues?.get(1)
         var urlSub = URL_SUB_REGEX.find(html)?.groupValues?.get(1)
