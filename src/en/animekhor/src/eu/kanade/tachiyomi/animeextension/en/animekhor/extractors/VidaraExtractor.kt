@@ -3,10 +3,9 @@ package eu.kanade.tachiyomi.animeextension.en.animekhor.extractors
 import aniyomi.lib.playlistutils.PlaylistUtils
 import eu.kanade.tachiyomi.animesource.model.Track
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.POST
-import eu.kanade.tachiyomi.network.awaitSuccess
+import keiyoushi.utils.get
 import keiyoushi.utils.parseAs
+import keiyoushi.utils.post
 import keiyoushi.utils.toJsonRequestBody
 import keiyoushi.utils.useAsJsoup
 import kotlinx.serialization.SerialName
@@ -28,7 +27,7 @@ class VidaraExtractor(private val client: OkHttpClient, private val headers: Hea
         }.getOrDefault(if (url.contains("vidara.to")) "https://vidara.to" else "https://vidvara.fit")
 
         val origin = runCatching {
-            val doc = client.newCall(GET(url, headers)).awaitSuccess().useAsJsoup()
+            val doc = client.get(url).useAsJsoup()
             val script = doc.selectFirst("script:containsData(MIRROR_ORIGIN)")?.data().orEmpty()
             ORIGIN_REGEX.find(script)?.groupValues?.get(1)
         }.getOrNull() ?: defaultOrigin
@@ -40,7 +39,7 @@ class VidaraExtractor(private val client: OkHttpClient, private val headers: Hea
             .set("Origin", origin)
             .build()
 
-        val response = client.newCall(POST(apiUrl, requestHeaders, requestBody)).awaitSuccess()
+        val response = client.post(apiUrl, requestHeaders, requestBody)
             .parseAs<VidaraResponse>()
 
         val streamingUrl = response.streamingUrl ?: return emptyList()
