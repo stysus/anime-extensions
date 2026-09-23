@@ -7,7 +7,7 @@ import aniyomi.lib.okruextractor.OkruExtractor
 import aniyomi.lib.rumbleextractor.RumbleExtractor
 import aniyomi.lib.streamwishextractor.StreamWishExtractor
 import aniyomi.lib.vidhideextractor.VidHideExtractor
-import eu.kanade.tachiyomi.animeextension.en.animekhor.extractors.TurbovidExtractor
+import eu.kanade.tachiyomi.animeextension.en.animekhor.extractors.TurboVidExtractor
 import eu.kanade.tachiyomi.animeextension.en.animekhor.extractors.VidaraExtractor
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
@@ -66,7 +66,7 @@ class AnimeKhor :
     }
     private val vidHideExtractor by lazy { VidHideExtractor(client, headers) }
     private val vidaraExtractor by lazy { VidaraExtractor(client, headers) }
-    private val turbovidExtractor by lazy { TurbovidExtractor(client, headers) }
+    private val turboVidExtractor by lazy { TurboVidExtractor(client, headers) }
 
     // ============================ Video Links =============================
 
@@ -95,7 +95,7 @@ class AnimeKhor :
             }
 
             url.contains("turbovid") || url.contains("turboviplay") || url.contains("emturbovid") -> {
-                turbovidExtractor.videosFromUrl(url, prefix = prefix)
+                turboVidExtractor.videosFromUrl(url, prefix = prefix)
             }
 
             url.contains("ok.ru") -> {
