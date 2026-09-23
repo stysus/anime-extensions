@@ -9,7 +9,7 @@ import keiyoushi.utils.bodyString
 import okhttp3.Headers
 import okhttp3.OkHttpClient
 
-class TurbovidExtractor(private val client: OkHttpClient, private val headers: Headers) {
+class TurboVidExtractor(private val client: OkHttpClient, private val headers: Headers) {
 
     private val playlistUtils by lazy { PlaylistUtils(client, headers) }
 
