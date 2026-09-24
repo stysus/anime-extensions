@@ -4,9 +4,10 @@ import aniyomi.lib.playlistutils.PlaylistUtils
 import eu.kanade.tachiyomi.animesource.model.Video
 import keiyoushi.utils.get
 import keiyoushi.utils.useAsJsoup
+import okhttp3.Headers
 import okhttp3.OkHttpClient
 
-class OkruExtractor(private val client: OkHttpClient) {
+class OkruExtractor(private val client: OkHttpClient, private val headers: Headers = Headers.EMPTY) {
     private val playlistUtils by lazy { PlaylistUtils(client) }
 
     private fun fixQuality(quality: String): String {
@@ -24,7 +25,7 @@ class OkruExtractor(private val client: OkHttpClient) {
     }
 
     suspend fun videosFromUrl(url: String, prefix: String = "", fixQualities: Boolean = true): List<Video> {
-        val document = client.get(url).useAsJsoup()
+        val document = client.get(url, headers).useAsJsoup()
         val videoString = document.selectFirst("div[data-options]")
             ?.attr("data-options")
             ?: return emptyList<Video>()

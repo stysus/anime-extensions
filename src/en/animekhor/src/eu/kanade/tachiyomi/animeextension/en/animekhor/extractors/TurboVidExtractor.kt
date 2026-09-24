@@ -66,6 +66,7 @@ class TurboVidExtractor(private val client: OkHttpClient, private val headers: H
     }
 
     private fun unpackHunter(h: String, n: String, t: Int, e: Int): String {
+        if (e !in Character.MIN_RADIX..Character.MAX_RADIX) return ""
         val delimiter = n.getOrNull(e) ?: return ""
         val chunks = h.split(delimiter)
         if (chunks.size <= 1) return ""
