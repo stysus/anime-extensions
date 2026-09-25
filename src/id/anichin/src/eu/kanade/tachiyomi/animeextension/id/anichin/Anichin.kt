@@ -15,12 +15,13 @@ import aniyomi.lib.youruploadextractor.YourUploadExtractor
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.multisrc.animestream.AnimeStream
-import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.awaitSuccess
 import keiyoushi.utils.addSetPreference
+import keiyoushi.utils.bodyString
 import keiyoushi.utils.delegate
+import keiyoushi.utils.get
 import keiyoushi.utils.parallelCatchingFlatMapBlocking
 import keiyoushi.utils.useAsJsoup
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
@@ -184,7 +185,7 @@ class Anichin :
             withTimeoutOrNull(5000L) {
                 runCatching {
                     getVideoList(item.url, item.name)
-                }.getOrDefault(emptyList())
+                }.onFailure { if (it is CancellationException) throw it }.getOrDefault(emptyList())
             } ?: emptyList()
         }
 
@@ -195,7 +196,7 @@ class Anichin :
                     withTimeoutOrNull(5000L) {
                         runCatching {
                             getVideoList(defaultIframe, "Default")
-                        }.getOrDefault(emptyList())
+                        }.onFailure { if (it is CancellationException) throw it }.getOrDefault(emptyList())
                     }
                 } ?: emptyList()
             }
@@ -211,13 +212,13 @@ class Anichin :
             }.getOrNull().orEmpty()
             Jsoup.parse(decoded)
         } else {
-            timeoutClient.newCall(GET(encodedData, headers)).awaitSuccess().useAsJsoup()
+            timeoutClient.get(encodedData, headers).useAsJsoup()
         }
         doc.selectFirst(getEpisodeIframeSelector())?.safeUrl()
             ?: doc.selectFirst("meta[content~=.][itemprop=embedUrl]")?.safeUrl("content")
             ?: Regex("""(?:src|SRC)=["']([^"']+)["']""").find(doc.html())?.groupValues?.get(1)
             ?: ""
-    }.getOrDefault("")
+    }.onFailure { if (it is CancellationException) throw it }.getOrDefault("")
 
     private fun Element.safeUrl(attribute: String = "src"): String {
         val value = attr(attribute)
@@ -302,7 +303,7 @@ class Anichin :
             val turboHeaders = headers.newBuilder()
                 .set("Referer", baseUrl)
                 .build()
-            val doc = timeoutClient.newCall(GET(url, turboHeaders)).awaitSuccess().useAsJsoup()
+            val doc = timeoutClient.get(url, turboHeaders).useAsJsoup()
             val m3u8Url = doc.selectFirst("div#video_player, div[data-hash]")?.attr("data-hash")
                 ?: Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""").find(doc.html())?.value
                 ?: return emptyList()
@@ -312,7 +313,7 @@ class Anichin :
                 referer = url,
                 videoNameGen = { "TurboVIP - $it" },
             )
-        }.getOrDefault(emptyList())
+        }.onFailure { if (it is CancellationException) throw it }.getOrDefault(emptyList())
     }
 
     private suspend fun extractDailymotion(videoId: String): List<Video> {
@@ -321,11 +322,11 @@ class Anichin :
                 .set("Referer", "https://www.dailymotion.com/")
                 .build()
             val embedUrl = "https://www.dailymotion.com/embed/video/$videoId"
-            val html = timeoutClient.newCall(GET(embedUrl, dmHeaders)).awaitSuccess().use { it.body.string() }
+            val html = timeoutClient.get(embedUrl, dmHeaders).bodyString()
             val v1st = Regex("""\"v1st\":\"([^\"]+)\"""").find(html)?.groupValues?.get(1).orEmpty()
             val ts = Regex("""\"ts\":(\d+)""").find(html)?.groupValues?.get(1).orEmpty()
             val jsonUrl = "https://www.dailymotion.com/player/metadata/video/$videoId?locale=en-US&dmV1st=$v1st&dmTs=$ts&is_native_app=0"
-            val jsonStr = timeoutClient.newCall(GET(jsonUrl, dmHeaders)).awaitSuccess().use { it.body.string() }
+            val jsonStr = timeoutClient.get(jsonUrl, dmHeaders).bodyString()
             val jsonObj = json.parseToJsonElement(jsonStr).jsonObject
             val qualities = jsonObj["qualities"]?.jsonObject ?: return emptyList()
             val autoList = qualities["auto"]?.jsonArray ?: return emptyList()
@@ -337,7 +338,7 @@ class Anichin :
                 referer = "https://www.dailymotion.com/",
                 videoNameGen = { "Dailymotion - $it" },
             )
-        }.getOrDefault(emptyList())
+        }.onFailure { if (it is CancellationException) throw it }.getOrDefault(emptyList())
     }
 
     // ============================= Utilities ==============================

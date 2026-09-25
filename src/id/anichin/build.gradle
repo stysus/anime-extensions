@@ -3,6 +3,7 @@ ext {
     extClass = '.Anichin'
     themePkg = 'animestream'
     baseUrl = 'https://anichin.moe'
+    libVersion = 16
     overrideVersionCode = 1
 }
 
