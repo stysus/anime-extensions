@@ -3,6 +3,7 @@ ext {
     extClass = '.Tvanime'
     libVersion = 16
     extVersionCode = 50
+    isNsfw = true
 }
 
 apply plugin: "kei.plugins.extension.legacy"
