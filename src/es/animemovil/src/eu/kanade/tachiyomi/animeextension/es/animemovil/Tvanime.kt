@@ -135,7 +135,7 @@ class Tvanime :
 
     private suspend fun parseEpisodeList(document: Document, animeUrl: String): List<SEpisode> {
         val slug = document.selectFirst("#episodes-content")?.attr("data-anime-slug")
-            ?: animeUrl.substringAfterLast('/')
+            ?: animeUrl.trimEnd('/').substringAfterLast('/')
         if (slug.isBlank()) return emptyList()
 
         val episodes = mutableListOf<SEpisode>()
@@ -145,8 +145,11 @@ class Tvanime :
             .mapNotNull { it.attr("value").toIntOrNull() }
             .maxOrNull() ?: 1
         for (range in 2..lastRange) {
-            val rangeDocument = client.get("$baseUrl/anime/$slug/episodes/$range", ajaxHeaders).useAsJsoup()
-            episodes += parseEpisodes(rangeDocument.select("a.episode-card"))
+            runCatching {
+                client.get("$baseUrl/anime/$slug/episodes/$range", ajaxHeaders).useAsJsoup()
+            }.getOrNull()?.let { rangeDocument ->
+                episodes += parseEpisodes(rangeDocument.select("a.episode-card"))
+            }
         }
 
         return episodes.reversed()
