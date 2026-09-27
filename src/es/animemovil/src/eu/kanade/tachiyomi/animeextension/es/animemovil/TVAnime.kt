@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.animeextension.es.animemovil
 
-import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
 import aniyomi.lib.mp4uploadextractor.Mp4uploadExtractor
 import aniyomi.lib.streamtapeextractor.StreamTapeExtractor
@@ -15,18 +14,21 @@ import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.network.get
 import keiyoushi.utils.AnimeHttpLegacySource
+import keiyoushi.utils.addListPreference
 import keiyoushi.utils.catchingFlatMapBlocking
-import keiyoushi.utils.get
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.useAsJsoup
+import kotlinx.coroutines.CancellationException
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.select.Elements
-import java.net.URLEncoder
 
-class Tvanime :
+class TVAnime :
     AnimeHttpLegacySource(),
     ConfigurableAnimeSource {
 
@@ -57,7 +59,15 @@ class Tvanime :
 
         private const val PREF_SERVER_KEY = "preferred_server"
         private const val PREF_SERVER_DEFAULT = "Voe"
-        private val SERVER_LIST = arrayOf("Voe", "MP4Upload", "YourUpload", "StreamTape", "Mega", "UPNShare", "Byse")
+        private val SERVER_LIST = arrayOf(
+            "Voe",
+            "MP4Upload",
+            "YourUpload",
+            "StreamTape",
+            "VidHide",
+            "UPNShare",
+            "Byse",
+        )
     }
 
     override fun popularAnimeRequest(page: Int) = GET("$baseUrl/directorio/?sort=rating&page=$page", headers)
@@ -70,16 +80,19 @@ class Tvanime :
 
     private fun parseAnimeList(document: Document): AnimesPage {
         val currentPage = document.selectFirst(".catalog-pagination .pagination-current")
-            ?.text()?.trim()?.toIntOrNull() ?: 1
+            ?.text()?.toIntOrNull() ?: 1
         val maxPage = document.select(".catalog-pagination a[href*=page=]")
-            .mapNotNull { Regex("page=(\\d+)").find(it.attr("href"))?.groupValues?.get(1)?.toIntOrNull() }
+            .mapNotNull { anchor ->
+                anchor.attr("abs:href").ifBlank { anchor.attr("href") }
+                    .toHttpUrlOrNull()?.queryParameter("page")?.toIntOrNull()
+            }
             .maxOrNull() ?: 1
 
         val animeList = document.select(".catalog-grid article.anime-card").mapNotNull { element ->
             val url = element.selectFirst("a.anime-card-image")?.attr("abs:href")
                 ?: element.selectFirst(".anime-card-title a")?.attr("abs:href")
                 ?: return@mapNotNull null
-            val title = element.selectFirst(".anime-card-title")?.text()?.trim()
+            val title = element.selectFirst(".anime-card-title")?.text()
                 ?: return@mapNotNull null
             SAnime.create().apply {
                 setUrlWithoutDomain(url)
@@ -92,25 +105,26 @@ class Tvanime :
     }
 
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
+        val url = "$baseUrl/directorio/".toHttpUrl().newBuilder()
+            .addQueryParameter("page", "$page")
+
         if (query.isNotBlank()) {
-            return GET("$baseUrl/directorio/?q=${URLEncoder.encode(query, "UTF-8")}&page=$page", headers)
+            url.addQueryParameter("q", query)
+            return GET(url.build(), headers)
         }
 
         val filterParams = filters.getSearchParameters()
-
-        val params = mutableMapOf<String, String>()
         if (filterParams.genre.isNotBlank()) {
-            params["genre"] = filterParams.genre
+            url.addQueryParameter("genre", filterParams.genre)
         }
         if (filterParams.type.isNotBlank()) {
-            params["type"] = filterParams.type
+            url.addQueryParameter("type", filterParams.type)
         }
         if (filterParams.status.isNotBlank()) {
-            params["status"] = filterParams.status
+            url.addQueryParameter("status", filterParams.status)
         }
-        params["page"] = "$page"
 
-        return GET("$baseUrl/directorio/?${encodeQuery(params)}", headers)
+        return GET(url.build(), headers)
     }
 
     override fun searchAnimeParse(response: Response) = parseAnimeList(response.asJsoup())
@@ -118,10 +132,10 @@ class Tvanime :
     override fun animeDetailsParse(response: Response): SAnime {
         val document = response.asJsoup()
         return SAnime.create().apply {
-            title = document.selectFirst("h1.anime-title")?.text()?.trim() ?: ""
-            description = document.selectFirst("p.anime-synopsis")?.text()?.trim()
+            title = document.selectFirst("h1.anime-title")!!.text()
+            description = document.selectFirst("p.anime-synopsis")?.text()
             thumbnail_url = document.selectFirst(".anime-poster img")?.attr("abs:src")
-            genre = document.select(".anime-genres a").joinToString { it.text().trim() }
+            genre = document.select(".anime-genres a").joinToString { it.text() }
             status = parseStatus(document.selectFirst(".anime-status")?.text() ?: "")
         }
     }
@@ -147,6 +161,8 @@ class Tvanime :
         for (range in 2..lastRange) {
             runCatching {
                 client.get("$baseUrl/anime/$slug/episodes/$range", ajaxHeaders).useAsJsoup()
+            }.onFailure {
+                if (it is CancellationException) throw it
             }.getOrNull()?.let { rangeDocument ->
                 episodes += parseEpisodes(rangeDocument.select("a.episode-card"))
             }
@@ -158,10 +174,10 @@ class Tvanime :
     private fun parseEpisodes(cards: Elements): List<SEpisode> = cards.mapNotNull { card ->
         val url = card.attr("abs:href").ifBlank { card.attr("href") }
         if (url.isBlank()) return@mapNotNull null
-        val number = card.selectFirst(".episode-number")?.text()?.removePrefix("E")?.trim()?.toFloatOrNull()
+        val number = card.selectFirst(".episode-number")?.text()?.removePrefix("E")?.toFloatOrNull()
         SEpisode.create().apply {
             setUrlWithoutDomain(url)
-            name = card.selectFirst(".episode-card-body strong")?.text()?.trim()
+            name = card.selectFirst(".episode-card-body strong")?.text()
                 ?: number?.let { "Episodio ${it.toInt()}" }
                 ?: "Episodio"
             episode_number = number ?: 0f
@@ -175,7 +191,7 @@ class Tvanime :
             if (url.isBlank() || url.contains("mega.nz")) {
                 return@catchingFlatMapBlocking emptyList()
             }
-            val serverName = button.attr("data-server-name").ifBlank { button.text().trim() }
+            val serverName = button.attr("data-server-name").ifBlank { button.text() }
             val language = button.attr("data-server-language").trim()
             val label = if (language.isBlank()) serverName else "$serverName ($language)"
             serverVideoResolver(url, label)
@@ -222,46 +238,31 @@ class Tvanime :
     override fun getFilterList(): AnimeFilterList = Filters.FILTER_LIST
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
-        ListPreference(screen.context).apply {
-            key = PREF_QUALITY_KEY
-            title = "Preferred quality"
-            entries = QUALITY_LIST
-            entryValues = QUALITY_LIST
-            setDefaultValue(PREF_QUALITY_DEFAULT)
-            summary = "%s"
+        screen.addListPreference(
+            key = PREF_QUALITY_KEY,
+            default = PREF_QUALITY_DEFAULT,
+            title = "Preferred quality",
+            summary = "%s",
+            entries = QUALITY_LIST.toList(),
+            entryValues = QUALITY_LIST.toList(),
+        )
 
-            setOnPreferenceChangeListener { _, newValue ->
-                val selected = newValue as String
-                val index = findIndexOfValue(selected)
-                val entry = entryValues[index] as String
-                preferences.edit().putString(key, entry).commit()
-            }
-        }.also(screen::addPreference)
-
-        ListPreference(screen.context).apply {
-            key = PREF_SERVER_KEY
-            title = "Preferred server"
-            entries = SERVER_LIST
-            entryValues = SERVER_LIST
-            setDefaultValue(PREF_SERVER_DEFAULT)
-            summary = "%s"
-
-            setOnPreferenceChangeListener { _, newValue ->
-                val selected = newValue as String
-                val index = findIndexOfValue(selected)
-                val entry = entryValues[index] as String
-                preferences.edit().putString(key, entry).commit()
-            }
-        }.also(screen::addPreference)
+        screen.addListPreference(
+            key = PREF_SERVER_KEY,
+            default = PREF_SERVER_DEFAULT,
+            title = "Preferred server",
+            summary = "%s",
+            entries = SERVER_LIST.toList(),
+            entryValues = SERVER_LIST.toList(),
+        )
     }
 
-    private fun parseStatus(text: String): Int = when {
-        text.contains("Finalizado", true) -> SAnime.COMPLETED
-        text.contains("En emisi", true) -> SAnime.ONGOING
-        else -> SAnime.UNKNOWN
-    }
-
-    private fun encodeQuery(params: Map<String, String>): String = params.entries.joinToString("&") {
-        "${URLEncoder.encode(it.key, "UTF-8")}=${URLEncoder.encode(it.value, "UTF-8")}"
+    private fun parseStatus(text: String): Int {
+        val status = text.lowercase()
+        return when {
+            status.contains("finalizado") -> SAnime.COMPLETED
+            status.contains("en emisi") -> SAnime.ONGOING
+            else -> SAnime.UNKNOWN
+        }
     }
 }
