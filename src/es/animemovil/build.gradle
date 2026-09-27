@@ -2,7 +2,7 @@ ext {
     extName = 'TVAnime'
     extClass = '.TVAnime'
     libVersion = 16
-    extVersionCode = 51
+    extVersionCode = 50
     isNsfw = true
 }
 
