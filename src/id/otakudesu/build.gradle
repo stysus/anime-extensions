@@ -1,6 +1,7 @@
 ext {
     extName = 'OtakuDesu'
     extClass = '.OtakuDesu'
+    libVersion = 16
     extVersionCode = 44
 }
 

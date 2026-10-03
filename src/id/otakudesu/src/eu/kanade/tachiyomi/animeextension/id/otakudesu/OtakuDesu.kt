@@ -1,7 +1,6 @@
 package eu.kanade.tachiyomi.animeextension.id.otakudesu
 
 import android.util.Base64
-import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
 import aniyomi.lib.bloggerextractor.BloggerExtractor
 import aniyomi.lib.mp4uploadextractor.Mp4uploadExtractor
@@ -16,21 +15,23 @@ import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.POST
-import eu.kanade.tachiyomi.network.awaitSuccess
+import keiyoushi.network.get
+import keiyoushi.network.post
 import keiyoushi.utils.ParsedAnimeHttpLegacySource
+import keiyoushi.utils.UrlUtils
+import keiyoushi.utils.addListPreference
 import keiyoushi.utils.bodyString
 import keiyoushi.utils.getPreferencesLazy
-import keiyoushi.utils.parallelCatchingFlatMapBlocking
-import keiyoushi.utils.parallelMapNotNullBlocking
+import keiyoushi.utils.parallelCatchingFlatMap
+import keiyoushi.utils.parallelMapNotNull
+import keiyoushi.utils.parseAs
 import keiyoushi.utils.tryParse
 import keiyoushi.utils.useAsJsoup
+import kotlinx.coroutines.CancellationException
 import okhttp3.FormBody
-import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import okhttp3.Response
-import org.json.JSONObject
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -49,12 +50,10 @@ class OtakuDesu :
 
     override val supportsLatest = true
 
-    override fun headersBuilder(): Headers.Builder = super.headersBuilder()
-        .add("Referer", "$baseUrl/")
-
     private val ajaxHeaders by lazy {
-        headersBuilder()
-            .add("X-Requested-With", "XMLHttpRequest")
+        headers.newBuilder()
+            .set("Referer", "$baseUrl/")
+            .set("X-Requested-With", "XMLHttpRequest")
             .build()
     }
 
@@ -121,22 +120,18 @@ class OtakuDesu :
     // =============================== Search ===============================
     override fun searchAnimeFromElement(element: Element): SAnime = throw UnsupportedOperationException()
 
-    private fun searchAnimeFromElement(element: Element, ui: String): SAnime = SAnime.create().apply {
-        when (ui) {
-            "search" -> {
-                val link = element.selectFirst("h2 > a")!!
-                setUrlWithoutDomain(link.attr("href"))
-                title = link.text().replace(" Subtitle Indonesia", "")
-                thumbnail_url = element.selectFirst("img")!!.attr("src")
-            }
+    private fun searchResultFromElement(element: Element): SAnime = SAnime.create().apply {
+        val link = element.selectFirst("h2 > a")!!
+        setUrlWithoutDomain(link.attr("href"))
+        title = link.text().replace(" Subtitle Indonesia", "")
+        thumbnail_url = element.selectFirst("img")!!.attr("src")
+    }
 
-            else -> {
-                val link = element.selectFirst(".col-anime-title > a")!!
-                setUrlWithoutDomain(link.attr("href"))
-                title = link.text()
-                thumbnail_url = element.selectFirst(".col-anime-cover > img")!!.attr("src")
-            }
-        }
+    private fun genreFromElement(element: Element): SAnime = SAnime.create().apply {
+        val link = element.selectFirst(".col-anime-title > a")!!
+        setUrlWithoutDomain(link.attr("href"))
+        title = link.text()
+        thumbnail_url = element.selectFirst(".col-anime-cover > img")!!.attr("src")
     }
 
     override fun searchAnimeNextPageSelector() = latestUpdatesNextPageSelector()
@@ -158,15 +153,9 @@ class OtakuDesu :
     override fun searchAnimeParse(response: Response): AnimesPage {
         val document = response.useAsJsoup()
 
-        val ui = when {
-            document.selectFirst(genreSelector) == null -> "search"
-            document.selectFirst(searchAnimeSelector()) == null -> "genres"
-            else -> "unknown"
-        }
-
-        val animes = when (ui) {
-            "genres" -> document.select(genreSelector).map { searchAnimeFromElement(it, ui) }
-            "search" -> document.select(searchAnimeSelector()).map { searchAnimeFromElement(it, ui) }
+        val animes = when {
+            document.selectFirst(genreSelector) == null -> document.select(searchAnimeSelector()).map(::searchResultFromElement)
+            document.selectFirst(searchAnimeSelector()) == null -> document.select(genreSelector).map(::genreFromElement)
             else -> document.select(latestUpdatesSelector()).map(::latestUpdatesFromElement)
         }
 
@@ -178,10 +167,10 @@ class OtakuDesu :
     // ============================ Video Links =============================
     override fun videoListSelector() = "div.mirrorstream ul li > a"
 
-    override fun videoListParse(response: Response): List<Video> {
-        val doc = response.useAsJsoup()
-        val script = doc.selectFirst("script:containsData(window.__x__nonce)")?.data()
-            ?: doc.selectFirst("script:containsData(mirrorstream)")?.data()
+    override suspend fun getVideoList(episode: SEpisode): List<Video> {
+        val document = client.get(baseUrl + episode.url).useAsJsoup()
+        val script = document.selectFirst("script:containsData(window.__x__nonce)")?.data()
+            ?: document.selectFirst("script:containsData(mirrorstream)")?.data()
             ?: return emptyList()
 
         val nonceAction = NONCE_ACTION_REGEX.find(script)?.groupValues?.get(1) ?: return emptyList()
@@ -189,50 +178,38 @@ class OtakuDesu :
             ?: FALLBACK_ACTION_REGEX.find(script)?.groupValues?.get(1)
             ?: return emptyList()
 
-        val nonce = runCatching { getNonce(nonceAction) }.getOrNull()?.takeIf(String::isNotBlank) ?: return emptyList()
+        val nonce = runCatching { getNonce(nonceAction) }.getOrNull()
+            ?.takeIf(String::isNotBlank) ?: return emptyList()
 
-        return doc.select(videoListSelector())
-            .parallelMapNotNullBlocking {
-                runCatching { getEmbedLinks(it, action, nonce) }.getOrNull()
-            }
-            .parallelCatchingFlatMapBlocking {
-                getVideosFromEmbed(it.first, it.second)
-            }
+        return document.select(videoListSelector())
+            .parallelMapNotNull { runCatching { getEmbedLinks(it, action, nonce) }.getOrNull() }
+            .parallelCatchingFlatMap { getVideosFromEmbed(it.first, it.second) }
     }
 
     private suspend fun getEmbedLinks(element: Element, action: String, nonce: String): Pair<String, String>? {
         val rawContent = element.attr("data-content").takeIf(String::isNotBlank) ?: return null
         val decodedData = runCatching { rawContent.b64Decode() }.getOrNull() ?: return null
 
-        val json = runCatching { JSONObject(decodedData) }.getOrNull() ?: return null
-        val id = json.optString("id").takeIf(String::isNotBlank) ?: return null
-        val mirror = json.optString("i").takeIf(String::isNotBlank) ?: return null
-        val quality = json.optString("q").takeIf(String::isNotBlank) ?: return null
+        val embed = runCatching { decodedData.parseAs<EmbedDto>() }.getOrNull() ?: return null
+        val quality = embed.q.takeIf(String::isNotBlank) ?: return null
 
         val form = FormBody.Builder().apply {
-            add("id", id)
-            add("i", mirror)
+            add("id", embed.id.toString())
+            add("i", embed.mirror.toString())
             add("q", quality)
             add("nonce", nonce)
             add("action", action)
         }.build()
 
-        val responseString = client.newCall(POST("$baseUrl/wp-admin/admin-ajax.php", ajaxHeaders, form))
-            .awaitSuccess()
-            .bodyString()
+        val responseString = client.post("$baseUrl/wp-admin/admin-ajax.php", ajaxHeaders, form).bodyString()
 
-        val b64Html = runCatching { JSONObject(responseString).getString("data") }.getOrNull()
-            ?: DATA_REGEX.find(responseString)?.groupValues?.get(1)
-            ?: return null
-
+        val b64Html = responseString.ajaxData() ?: return null
         val html = runCatching { b64Html.b64Decode() }.getOrNull() ?: return null
-        val doc = Jsoup.parse(html)
-        val rawUrl = doc.selectFirst("iframe")?.attr("src")?.takeIf(String::isNotBlank)
-            ?: doc.selectFirst("source")?.attr("src")?.takeIf(String::isNotBlank)
-            ?: doc.selectFirst("video")?.attr("src")?.takeIf(String::isNotBlank)
+        val doc = Jsoup.parseBodyFragment(html, baseUrl)
+        val url = doc.selectFirst("iframe")?.absUrl("src")?.takeIf(String::isNotBlank)
+            ?: doc.selectFirst("source")?.absUrl("src")?.takeIf(String::isNotBlank)
+            ?: doc.selectFirst("video")?.absUrl("src")?.takeIf(String::isNotBlank)
             ?: return null
-
-        val url = if (rawUrl.startsWith("//")) "https:$rawUrl" else rawUrl
 
         return Pair(quality, url)
     }
@@ -270,12 +247,8 @@ class OtakuDesu :
             filelionsExtractor.videosFromUrl(link, videoNameGen = { "StreamWish - $it" })
         }
 
-        "desustream" in link || "desudrive" in link || "odstream" in link || "odcdn" in link || "otakuwatch" in link -> {
-            extractDesuStream(quality, link)
-        }
-
         isDirectMedia(link) -> {
-            listOf(Video(link, "Direct - $quality", link, headers))
+            listOf(Video(videoUrl = link, videoTitle = "Direct - $quality", headers = headers))
         }
 
         else -> {
@@ -289,67 +262,44 @@ class OtakuDesu :
     }
 
     private suspend fun extractFiledon(quality: String, link: String): List<Video> = try {
-        val doc = client.newCall(GET(link, headers)).awaitSuccess().useAsJsoup()
+        val doc = client.get(link).useAsJsoup()
         val dataPage = doc.selectFirst("div#app")?.attr("data-page") ?: return emptyList()
-        val json = JSONObject(dataPage)
-        val props = json.getJSONObject("props")
-        val videoUrl = props.getString("url")
-        listOf(Video(videoUrl, "Filedon - $quality", videoUrl, headers))
-    } catch (_: Exception) {
+        val videoUrl = dataPage.parseAs<FiledonDto>().props.url
+        listOf(Video(videoUrl = videoUrl, videoTitle = "Filedon - $quality", headers = headers))
+    } catch (e: Exception) {
+        if (e is CancellationException) throw e
         emptyList()
     }
 
     private suspend fun extractDesuStream(quality: String, link: String): List<Video> = try {
-        val desuHeaders = headers.newBuilder().set("Referer", "$baseUrl/").build()
-        val doc = client.newCall(GET(link, desuHeaders)).awaitSuccess().useAsJsoup()
+        val doc = client.get(link).useAsJsoup()
 
-        val rawSource = doc.selectFirst("video source")?.attr("src")?.takeIf(String::isNotBlank)
-            ?: doc.selectFirst("video")?.attr("src")?.takeIf(String::isNotBlank)
+        val sourceUrl = doc.selectFirst("video source")?.absUrl("src")?.takeIf(String::isNotBlank)
+            ?: doc.selectFirst("video")?.absUrl("src")?.takeIf(String::isNotBlank)
+            ?: DESU_FILE_REGEX.find(doc.select("script").joinToString("\n") { it.data() })
+                ?.groupValues?.get(1)?.let(UrlUtils::fixUrl)
 
-        val sourceUrl = rawSource?.let {
-            when {
-                it.startsWith("//") -> "https:$it"
-                it.startsWith("http") -> it
-                else -> null
-            }
-        }
-
-        if (sourceUrl != null) {
-            val videoHeaders = headers.newBuilder().set("Referer", link).build()
-            listOf(Video(sourceUrl, "DesuStream - $quality", sourceUrl, videoHeaders))
+        if (sourceUrl.isNullOrBlank()) {
+            emptyList()
         } else {
-            val script = doc.select("script").joinToString("\n") { it.data() }
-            val videoUrl = DESU_FILE_REGEX.find(script)?.groupValues?.get(1)
-                ?.let {
-                    when {
-                        it.startsWith("//") -> "https:$it"
-                        it.startsWith("http") -> it
-                        else -> null
-                    }
-                }
-
-            if (videoUrl != null) {
-                val videoHeaders = headers.newBuilder().set("Referer", link).build()
-                listOf(Video(videoUrl, "DesuStream - $quality", videoUrl, videoHeaders))
-            } else {
-                emptyList()
-            }
+            val videoHeaders = headers.newBuilder().set("Referer", link).build()
+            listOf(Video(videoUrl = sourceUrl, videoTitle = "DesuStream - $quality", headers = videoHeaders))
         }
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        if (e is CancellationException) throw e
         emptyList()
     }
 
-    private fun getNonce(action: String): String {
+    private suspend fun getNonce(action: String): String {
         val form = FormBody.Builder().add("action", action).build()
-        val responseString = client.newCall(POST("$baseUrl/wp-admin/admin-ajax.php", ajaxHeaders, form))
-            .execute()
+        return client.post("$baseUrl/wp-admin/admin-ajax.php", ajaxHeaders, form)
             .bodyString()
-        return runCatching { JSONObject(responseString).getString("data") }.getOrNull()
-            ?: DATA_REGEX.find(responseString)?.groupValues?.get(1)
-            ?: ""
+            .ajaxData()
+            .orEmpty()
     }
 
-    override fun videoFromElement(element: Element) = throw UnsupportedOperationException()
+    private fun String.ajaxData(): String? = runCatching { parseAs<AjaxDto>().data }.getOrNull()
+        ?: DATA_REGEX.find(this)?.groupValues?.get(1)
 
     // ============================== Filters ===============================
     override fun getFilterList(): AnimeFilterList = AnimeFilterList(
@@ -407,15 +357,14 @@ class OtakuDesu :
 
     // ============================== Settings ==============================
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
-        val videoQualityPref = ListPreference(screen.context).apply {
-            key = PREF_QUALITY_KEY
-            title = PREF_QUALITY_TITLE
-            entries = PREF_QUALITY_ENTRIES
-            entryValues = PREF_QUALITY_ENTRIES
-            setDefaultValue(PREF_QUALITY_DEFAULT)
-            summary = "%s"
-        }
-        screen.addPreference(videoQualityPref)
+        screen.addListPreference(
+            key = PREF_QUALITY_KEY,
+            default = PREF_QUALITY_DEFAULT,
+            title = PREF_QUALITY_TITLE,
+            summary = "%s",
+            entries = PREF_QUALITY_ENTRIES.toList(),
+            entryValues = PREF_QUALITY_ENTRIES.toList(),
+        )
     }
 
     // ============================= Utilities ==============================
