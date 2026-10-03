@@ -178,11 +178,22 @@ class OtakuDesu :
             ?: FALLBACK_ACTION_REGEX.find(script)?.groupValues?.get(1)
             ?: return emptyList()
 
-        val nonce = runCatching { getNonce(nonceAction) }.getOrNull()
-            ?.takeIf(String::isNotBlank) ?: return emptyList()
+        val nonce = try {
+            getNonce(nonceAction)
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            null
+        }?.takeIf(String::isNotBlank) ?: return emptyList()
 
         return document.select(videoListSelector())
-            .parallelMapNotNull { runCatching { getEmbedLinks(it, action, nonce) }.getOrNull() }
+            .parallelMapNotNull {
+                try {
+                    getEmbedLinks(it, action, nonce)
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    null
+                }
+            }
             .parallelCatchingFlatMap { getVideosFromEmbed(it.first, it.second) }
     }
 
