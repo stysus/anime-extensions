@@ -170,7 +170,7 @@ class TVAnime :
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                // Range yang gagal dilewati; episode dari range lain tetap dipakai.
+                // Skip a failed range; episodes from other ranges are still used.
             }
         }
 
@@ -213,7 +213,7 @@ class TVAnime :
 
         "streamtape" -> StreamTapeExtractor(client).videosFromUrl(url, quality = label)
 
-        // VidHide dan StreamWish memakai player yang sama.
+        // VidHide and StreamWish use the same player.
         "vidhide", "streamwish" -> VidHideExtractor(client, headers).videosFromUrl(url) { "$label: $it" }
 
         "byse" -> FilemoonExtractor(client).videosFromUrl(url, prefix = "$label: ", headers = headers, referer = url)
