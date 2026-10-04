@@ -13,5 +13,8 @@ dependencies {
     implementation(project(':lib:mp4uploadextractor'))
     implementation(project(':lib:youruploadextractor'))
     implementation(project(':lib:streamtapeextractor'))
+    implementation(project(':lib:vidhideextractor'))
+    implementation(project(':lib:filemoonextractor'))
+    implementation(project(':lib:megaextractor'))
     implementation(project(':lib:universalextractor'))
 }

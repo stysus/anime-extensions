@@ -1,9 +1,12 @@
 package eu.kanade.tachiyomi.animeextension.es.animemovil
 
 import androidx.preference.PreferenceScreen
+import aniyomi.lib.filemoonextractor.FilemoonExtractor
+import aniyomi.lib.megaextractor.MegaExtractor
 import aniyomi.lib.mp4uploadextractor.Mp4uploadExtractor
 import aniyomi.lib.streamtapeextractor.StreamTapeExtractor
 import aniyomi.lib.universalextractor.UniversalExtractor
+import aniyomi.lib.vidhideextractor.VidHideExtractor
 import aniyomi.lib.voeextractor.VoeExtractor
 import aniyomi.lib.youruploadextractor.YourUploadExtractor
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
@@ -55,11 +58,11 @@ class TVAnime :
     companion object {
         private const val PREF_QUALITY_KEY = "preferred_quality"
         private const val PREF_QUALITY_DEFAULT = "1080"
-        private val QUALITY_LIST = arrayOf("1080", "720", "480", "360")
+        private val QUALITY_LIST = listOf("1080", "720", "480", "360")
 
         private const val PREF_SERVER_KEY = "preferred_server"
         private const val PREF_SERVER_DEFAULT = "Voe"
-        private val SERVER_LIST = arrayOf(
+        private val SERVER_LIST = listOf(
             "Voe",
             "MP4Upload",
             "YourUpload",
@@ -68,6 +71,8 @@ class TVAnime :
             "UPNShare",
             "Byse",
         )
+
+        private val QUALITY_REGEX = Regex("""(\d+)p""")
     }
 
     override fun popularAnimeRequest(page: Int) = GET("$baseUrl/directorio/?sort=rating&page=$page", headers)
@@ -83,7 +88,7 @@ class TVAnime :
             ?.text()?.toIntOrNull() ?: 1
         val maxPage = document.select(".catalog-pagination a[href*=page=]")
             .mapNotNull { anchor ->
-                anchor.attr("abs:href").ifBlank { anchor.attr("href") }
+                anchor.attr("abs:href")
                     .toHttpUrlOrNull()?.queryParameter("page")?.toIntOrNull()
             }
             .maxOrNull() ?: 1
@@ -141,14 +146,14 @@ class TVAnime :
     }
 
     override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> {
-        val document = client.get(baseUrl + anime.url, headers).useAsJsoup()
+        val document = client.get(baseUrl + anime.url).useAsJsoup()
         return parseEpisodeList(document, anime.url)
     }
 
     override fun episodeListParse(response: Response): List<SEpisode> = throw UnsupportedOperationException()
 
     private suspend fun parseEpisodeList(document: Document, animeUrl: String): List<SEpisode> {
-        val slug = document.selectFirst("#episodes-content")?.attr("data-anime-slug")
+        val slug = document.selectFirst("#episodes-content")?.attr("data-anime-slug")?.takeIf { it.isNotBlank() }
             ?: animeUrl.trimEnd('/').substringAfterLast('/')
         if (slug.isBlank()) return emptyList()
 
@@ -159,12 +164,13 @@ class TVAnime :
             .mapNotNull { it.attr("value").toIntOrNull() }
             .maxOrNull() ?: 1
         for (range in 2..lastRange) {
-            runCatching {
-                client.get("$baseUrl/anime/$slug/episodes/$range", ajaxHeaders).useAsJsoup()
-            }.onFailure {
-                if (it is CancellationException) throw it
-            }.getOrNull()?.let { rangeDocument ->
+            try {
+                val rangeDocument = client.get("$baseUrl/anime/$slug/episodes/$range", ajaxHeaders).useAsJsoup()
                 episodes += parseEpisodes(rangeDocument.select("a.episode-card"))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Range yang gagal dilewati; episode dari range lain tetap dipakai.
             }
         }
 
@@ -172,7 +178,7 @@ class TVAnime :
     }
 
     private fun parseEpisodes(cards: Elements): List<SEpisode> = cards.mapNotNull { card ->
-        val url = card.attr("abs:href").ifBlank { card.attr("href") }
+        val url = card.attr("abs:href")
         if (url.isBlank()) return@mapNotNull null
         val number = card.selectFirst(".episode-number")?.text()?.removePrefix("E")?.toFloatOrNull()
         SEpisode.create().apply {
@@ -188,39 +194,33 @@ class TVAnime :
         val document = response.asJsoup()
         return document.select(".watch-server").catchingFlatMapBlocking { button ->
             val url = button.attr("data-server-url").trim()
-            if (url.isBlank() || url.contains("mega.nz")) {
+            if (url.isBlank()) {
                 return@catchingFlatMapBlocking emptyList()
             }
             val serverName = button.attr("data-server-name").ifBlank { button.text() }
             val language = button.attr("data-server-language").trim()
             val label = if (language.isBlank()) serverName else "$serverName ($language)"
-            serverVideoResolver(url, label)
+            serverVideoResolver(url, serverName, label)
         }
     }
 
-    private suspend fun serverVideoResolver(url: String, label: String): List<Video> {
-        val embedUrl = url.lowercase()
-        return when {
-            embedUrl.contains("voe") -> {
-                VoeExtractor(client, headers).videosFromUrl(url, prefix = "$label: ")
-            }
+    private suspend fun serverVideoResolver(url: String, serverName: String, label: String): List<Video> = when (serverName.lowercase()) {
+        "voe" -> VoeExtractor(client, headers).videosFromUrl(url, prefix = "$label: ")
 
-            embedUrl.contains("mp4upload") -> {
-                Mp4uploadExtractor(client).videosFromUrl(url, headers, prefix = "$label: ")
-            }
+        "mp4upload" -> Mp4uploadExtractor(client).videosFromUrl(url, headers, prefix = "$label: ")
 
-            embedUrl.contains("yourupload") -> {
-                YourUploadExtractor(client).videoFromUrl(url, headers, name = label)
-            }
+        "yourupload" -> YourUploadExtractor(client).videoFromUrl(url, headers, name = label)
 
-            embedUrl.contains("streamtape") -> {
-                StreamTapeExtractor(client).videosFromUrl(url, quality = label)
-            }
+        "streamtape" -> StreamTapeExtractor(client).videosFromUrl(url, quality = label)
 
-            else -> {
-                UniversalExtractor(client).videosFromUrl(url, headers, prefix = "$label: ")
-            }
-        }
+        // VidHide dan StreamWish memakai player yang sama.
+        "vidhide", "streamwish" -> VidHideExtractor(client, headers).videosFromUrl(url) { "$label: $it" }
+
+        "byse" -> FilemoonExtractor(client).videosFromUrl(url, prefix = "$label: ", headers = headers, referer = url)
+
+        "mega" -> MegaExtractor(client, headers).videosFromUrl(url, prefix = "$label: ")
+
+        else -> UniversalExtractor(client).videosFromUrl(url, headers, prefix = "$label: ")
     }
 
     override fun List<Video>.sortVideos(): List<Video> {
@@ -230,7 +230,7 @@ class TVAnime :
             compareBy(
                 { it.videoTitle.contains(server, true) },
                 { it.videoTitle.contains(quality) },
-                { Regex("""(\d+)p""").find(it.videoTitle)?.groupValues?.get(1)?.toIntOrNull() ?: 0 },
+                { QUALITY_REGEX.find(it.videoTitle)?.groupValues?.get(1)?.toIntOrNull() ?: 0 },
             ),
         ).reversed()
     }
@@ -243,8 +243,8 @@ class TVAnime :
             default = PREF_QUALITY_DEFAULT,
             title = "Preferred quality",
             summary = "%s",
-            entries = QUALITY_LIST.toList(),
-            entryValues = QUALITY_LIST.toList(),
+            entries = QUALITY_LIST,
+            entryValues = QUALITY_LIST,
         )
 
         screen.addListPreference(
@@ -252,8 +252,8 @@ class TVAnime :
             default = PREF_SERVER_DEFAULT,
             title = "Preferred server",
             summary = "%s",
-            entries = SERVER_LIST.toList(),
-            entryValues = SERVER_LIST.toList(),
+            entries = SERVER_LIST,
+            entryValues = SERVER_LIST,
         )
     }
 
