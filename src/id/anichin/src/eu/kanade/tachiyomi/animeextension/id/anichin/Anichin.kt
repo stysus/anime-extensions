@@ -3,6 +3,7 @@ package eu.kanade.tachiyomi.animeextension.id.anichin
 import android.content.SharedPreferences
 import android.util.Base64
 import androidx.preference.PreferenceScreen
+import aniyomi.lib.dailymotionextractor.DailymotionExtractor
 import aniyomi.lib.doodextractor.DoodExtractor
 import aniyomi.lib.mp4uploadextractor.Mp4uploadExtractor
 import aniyomi.lib.okruextractor.OkruExtractor
@@ -16,7 +17,6 @@ import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.multisrc.animestream.AnimeStream
 import keiyoushi.utils.addSetPreference
-import keiyoushi.utils.bodyString
 import keiyoushi.utils.delegate
 import keiyoushi.utils.get
 import keiyoushi.utils.parallelCatchingFlatMapBlocking
@@ -24,11 +24,6 @@ import keiyoushi.utils.useAsJsoup
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Response
 import org.jsoup.Jsoup
@@ -44,8 +39,6 @@ class Anichin :
     ) {
 
     // ============================== Preferences ==============================
-    private val json by lazy { Json { ignoreUnknownKeys = true } }
-
     private val SharedPreferences.enabledHosters
         by preferences.delegate(PREF_HOSTER_KEY, PREF_HOSTER_DEFAULT)
 
@@ -117,6 +110,7 @@ class Anichin :
     private val streamTapeExtractor by lazy { StreamTapeExtractor(timeoutClient) }
     private val mp4uploadExtractor by lazy { Mp4uploadExtractor(timeoutClient) }
     private val yourUploadExtractor by lazy { YourUploadExtractor(timeoutClient) }
+    private val dailymotionExtractor by lazy { DailymotionExtractor(timeoutClient, headers) }
     private val playlistUtils by lazy { PlaylistUtils(client, headers) }
 
     private data class MirrorItem(val name: String, val url: String)
@@ -257,7 +251,7 @@ class Anichin :
                     else -> null
                 }
                 if (!dmId.isNullOrBlank()) {
-                    extractDailymotion(dmId)
+                    dailymotionExtractor.videosFromUrl("https://www.dailymotion.com/embed/video/$dmId", prefix = "Dailymotion - ")
                 } else {
                     emptyList()
                 }
@@ -312,31 +306,6 @@ class Anichin :
                 m3u8Url,
                 referer = url,
                 videoNameGen = { "TurboVIP - $it" },
-            )
-        }.onFailure { if (it is CancellationException) throw it }.getOrDefault(emptyList())
-    }
-
-    private suspend fun extractDailymotion(videoId: String): List<Video> {
-        return runCatching {
-            val dmHeaders = headers.newBuilder()
-                .set("Referer", "https://www.dailymotion.com/")
-                .build()
-            val embedUrl = "https://www.dailymotion.com/embed/video/$videoId"
-            val html = timeoutClient.get(embedUrl, dmHeaders).bodyString()
-            val v1st = Regex("""\"v1st\":\"([^\"]+)\"""").find(html)?.groupValues?.get(1).orEmpty()
-            val ts = Regex("""\"ts\":(\d+)""").find(html)?.groupValues?.get(1).orEmpty()
-            val jsonUrl = "https://www.dailymotion.com/player/metadata/video/$videoId?locale=en-US&dmV1st=$v1st&dmTs=$ts&is_native_app=0"
-            val jsonStr = timeoutClient.get(jsonUrl, dmHeaders).bodyString()
-            val jsonObj = json.parseToJsonElement(jsonStr).jsonObject
-            val qualities = jsonObj["qualities"]?.jsonObject ?: return emptyList()
-            val autoList = qualities["auto"]?.jsonArray ?: return emptyList()
-            val m3u8Url = autoList.firstNotNullOfOrNull { it.jsonObject["url"]?.jsonPrimitive?.contentOrNull }
-                ?: return emptyList()
-
-            playlistUtils.extractFromHls(
-                m3u8Url,
-                referer = "https://www.dailymotion.com/",
-                videoNameGen = { "Dailymotion - $it" },
             )
         }.onFailure { if (it is CancellationException) throw it }.getOrDefault(emptyList())
     }
