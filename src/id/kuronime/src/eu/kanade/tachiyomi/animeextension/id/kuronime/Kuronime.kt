@@ -49,8 +49,15 @@ class Kuronime :
 
     private val preferences by getPreferencesLazy {
         val storedHosts = getStringSet(PREF_HOSTER_KEY, null)
-        if (storedHosts == null || storedHosts.any { it in DEPRECATED_HOSTS }) {
-            edit().putStringSet(PREF_HOSTER_KEY, PREF_HOSTER_DEFAULT).apply()
+        if (storedHosts != null) {
+            val migrated = storedHosts - DEPRECATED_HOSTS
+            when {
+                migrated.isEmpty() && storedHosts.isNotEmpty() ->
+                    edit().putStringSet(PREF_HOSTER_KEY, PREF_HOSTER_DEFAULT).apply()
+
+                migrated != storedHosts ->
+                    edit().putStringSet(PREF_HOSTER_KEY, migrated).apply()
+            }
         }
     }
 
@@ -168,24 +175,16 @@ class Kuronime :
         val name = element.selectFirst("span.lchx")?.text() ?: linkElement.text()
         episode.name = name
 
-        val epMatch = EPISODE_REGEX.find(name)
+        val epMatch = EPISODE_REGEX.find(name) ?: NUMBER_REGEX.find(name)
         episode.episode_number = epMatch?.groupValues?.get(1)?.toFloatOrNull() ?: 1F
 
         return episode
     }
 
-    private val dateFormatterId by lazy {
-        SimpleDateFormat("MMMM d, yyyy", Locale("id", "ID"))
-    }
-
-    private val dateFormatterEn by lazy {
-        SimpleDateFormat("MMMM d, yyyy", Locale.ENGLISH)
-    }
-
     private fun parseDate(dateStr: String?): Long {
         if (dateStr.isNullOrBlank()) return 0L
-        return dateFormatterId.tryParse(dateStr).takeIf { it > 0L }
-            ?: dateFormatterEn.tryParse(dateStr)
+        return SimpleDateFormat("MMMM d, yyyy", Locale("id", "ID")).tryParse(dateStr).takeIf { it > 0L }
+            ?: SimpleDateFormat("MMMM d, yyyy", Locale.ENGLISH).tryParse(dateStr)
     }
 
     // ============================ Video Links =============================
@@ -276,7 +275,7 @@ class Kuronime :
 
             // StreamWish and FileLions share the same player implementation.
             matches("streamwish", "filelions") && hosterSelection.contains("vidhide") -> {
-                streamWishExtractor.videosFromUrl(url) { q -> "StreamWish - $quality ($q)" }
+                streamWishExtractor.videosFromUrl(url) { q -> "VidHide/StreamWish - $quality ($q)" }
             }
 
             matches("vidhide") && hosterSelection.contains("vidhide") -> {
@@ -372,7 +371,8 @@ class Kuronime :
         private const val DECRYPTION_KEY = "3&!Z0M,VIZ;dZW=="
 
         private val SCRIPT_PAYLOAD_REGEX = Regex("""var\s+_0x[a-f0-9]+\s*=\s*["']([A-Za-z0-9+/=]{20,})["']""")
-        private val EPISODE_REGEX = Regex("""(?i)(?:episode|eps\.?)?\s*(\d+(?:\.\d+)?)""")
+        private val EPISODE_REGEX = Regex("""(?i)(?:episode|eps\.?)\s*(\d+(?:\.\d+)?)""")
+        private val NUMBER_REGEX = Regex("""(\d+(?:\.\d+)?)""")
 
         private val SERVER_ORDER = listOf("PixelDrain", "Mp4Upload", "VidHide", "YourUpload", "DoodStream")
 
