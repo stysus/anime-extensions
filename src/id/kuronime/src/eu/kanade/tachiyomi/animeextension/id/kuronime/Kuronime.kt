@@ -1,12 +1,12 @@
 package eu.kanade.tachiyomi.animeextension.id.kuronime
 
 import android.util.Base64
-import androidx.preference.ListPreference
-import androidx.preference.MultiSelectListPreference
+import android.util.Log
 import androidx.preference.PreferenceScreen
 import aniyomi.lib.doodextractor.DoodExtractor
 import aniyomi.lib.mp4uploadextractor.Mp4uploadExtractor
 import aniyomi.lib.pixeldrainextractor.PixelDrainExtractor
+import aniyomi.lib.streamwishextractor.StreamWishExtractor
 import aniyomi.lib.vidhideextractor.VidHideExtractor
 import aniyomi.lib.youruploadextractor.YourUploadExtractor
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
@@ -19,12 +19,13 @@ import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.util.asJsoup
 import keiyoushi.lib.cryptoaes.CryptoAES
 import keiyoushi.utils.ParsedAnimeHttpLegacySource
+import keiyoushi.utils.addListPreference
+import keiyoushi.utils.addSetPreference
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parallelCatchingFlatMapBlocking
 import keiyoushi.utils.parseAs
 import keiyoushi.utils.toJsonRequestBody
 import keiyoushi.utils.tryParse
-import kotlinx.serialization.Serializable
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
@@ -46,11 +47,17 @@ class Kuronime :
     override fun headersBuilder(): Headers.Builder = super.headersBuilder()
         .add("Referer", "$baseUrl/")
 
-    private val preferences by getPreferencesLazy()
+    private val preferences by getPreferencesLazy {
+        val storedHosts = getStringSet(PREF_HOSTER_KEY, null)
+        if (storedHosts == null || storedHosts.any { it in DEPRECATED_HOSTS }) {
+            edit().putStringSet(PREF_HOSTER_KEY, PREF_HOSTER_DEFAULT).apply()
+        }
+    }
 
     private val doodExtractor by lazy { DoodExtractor(client) }
     private val mp4uploadExtractor by lazy { Mp4uploadExtractor(client) }
     private val pixelDrainExtractor by lazy { PixelDrainExtractor() }
+    private val streamWishExtractor by lazy { StreamWishExtractor(client, headers) }
     private val vidHideExtractor by lazy { VidHideExtractor(client, headers) }
     private val yourUploadExtractor by lazy { YourUploadExtractor(client) }
 
@@ -93,37 +100,28 @@ class Kuronime :
 
     override fun animeDetailsParse(document: Document): SAnime {
         val anime = SAnime.create()
-        val infoMap = document.select("div.infodetail ul li").associate { li ->
-            val text = li.text()
-            text.substringBefore(":").trim().lowercase(Locale.ROOT) to text.substringAfter(":").trim()
-        }
+        val infoMap = parseInfoMap(document)
 
-        anime.title = document.selectFirst("h1.entry-title, h1")?.text()?.trim()
-            ?: infoMap["judul"]
-            ?: ""
+        anime.title = (document.selectFirst("h1.entry-title, h1")?.text() ?: infoMap["judul"])!!
 
         val genres = document.select("div.infodetail li:contains(Genre) a")
-            .map { it.text().trim() }
+            .map { it.text() }
             .filter { it.isNotEmpty() }
-        anime.genre = if (genres.isNotEmpty()) {
-            genres.joinToString(", ")
-        } else {
-            infoMap["genre"]
-        }
+        anime.genre = if (genres.isNotEmpty()) genres.joinToString() else infoMap["genre"]
 
         anime.status = parseStatus(infoMap["status"] ?: "")
 
         val studio = document.select("div.infodetail li:contains(Studio) a")
-            .map { it.text().trim() }
+            .map { it.text() }
             .filter { it.isNotEmpty() }
-            .joinToString(", ")
+            .joinToString()
         anime.artist = studio.ifEmpty { infoMap["studio"] }
-        anime.author = null
 
         val conx = document.selectFirst("div.main-info div.con div.r div.conx, div.conx")
-        val synopsis = conx?.select("p")?.map { it.text().trim() }?.filter { it.isNotEmpty() }?.joinToString("\n\n")
-            ?.ifEmpty { conx.text().trim() }
-        anime.description = synopsis
+        anime.description = conx?.let { element ->
+            element.select("p").map { it.text() }.filter { it.isNotEmpty() }.joinToString("\n\n")
+                .ifEmpty { element.text() }
+        }
 
         val thumbnailElement = document.selectFirst("div.main-info div.l img, div.thumb img")
         anime.thumbnail_url = thumbnailElement?.attr("src")?.takeIf { it.isNotBlank() }
@@ -146,11 +144,7 @@ class Kuronime :
         val document = response.asJsoup()
         val episodeList = document.select(episodeListSelector()).map { episodeFromElement(it) }
 
-        val infoMap = document.select("div.infodetail ul li").associate { li ->
-            val text = li.text()
-            text.substringBefore(":").trim().lowercase(Locale.ROOT) to text.substringAfter(":").trim()
-        }
-
+        val infoMap = parseInfoMap(document)
         val updatedDate = parseDate(infoMap["updated on"])
         val releaseDate = parseDate(infoMap["released on"])
 
@@ -172,10 +166,9 @@ class Kuronime :
         episode.setUrlWithoutDomain(linkElement.attr("href"))
 
         val name = element.selectFirst("span.lchx")?.text() ?: linkElement.text()
-        episode.name = name.trim()
+        episode.name = name
 
         val epMatch = EPISODE_REGEX.find(name)
-            ?: Regex("""(\d+(?:\.\d+)?)""").find(name)
         episode.episode_number = epMatch?.groupValues?.get(1)?.toFloatOrNull() ?: 1F
 
         return episode
@@ -199,20 +192,13 @@ class Kuronime :
 
     override fun videoListParse(response: Response): List<Video> {
         val document = response.asJsoup()
-        val html = document.html()
-
-        val storedHosts = preferences.getStringSet(PREF_HOSTER_KEY, null)
-        val hosterSelection = if (storedHosts == null || storedHosts.any { it in DEPRECATED_HOSTS }) {
-            preferences.edit().putStringSet(PREF_HOSTER_KEY, PREF_HOSTER_DEFAULT).apply()
-            PREF_HOSTER_DEFAULT
-        } else {
-            storedHosts
-        }
+        val hosterSelection = preferences.getStringSet(PREF_HOSTER_KEY, PREF_HOSTER_DEFAULT)!!
 
         val videoList = mutableListOf<Video>()
 
         // 1. Try reverse-engineered animeku sources API
-        val encryptedId = SCRIPT_PAYLOAD_REGEX.find(html)?.groupValues?.get(1)
+        val encryptedId = document.select("script")
+            .firstNotNullOfOrNull { SCRIPT_PAYLOAD_REGEX.find(it.data())?.groupValues?.get(1) }
         if (encryptedId != null) {
             runCatching {
                 val apiHeaders = headers.newBuilder()
@@ -241,6 +227,8 @@ class Kuronime :
                     }
                     videoList.addAll(videos)
                 }
+            }.onFailure {
+                Log.w(TAG, "Animeku sources API failed, falling back to mirrors", it)
             }
         }
 
@@ -250,7 +238,7 @@ class Kuronime :
                 val decoded = if (opt.attr("value").isEmpty()) {
                     document.selectFirst("iframe")?.attr("data-src") ?: ""
                 } else {
-                    Jsoup.parse(
+                    Jsoup.parseBodyFragment(
                         String(Base64.decode(opt.attr("value"), Base64.DEFAULT)),
                     ).select("iframe[data-src~=.]").attr("data-src")
                 }
@@ -272,26 +260,40 @@ class Kuronime :
         url: String,
         quality: String,
         hosterSelection: Set<String>,
-    ): List<Video> = when {
-        ("mp4upload" in server || "mp4upload" in url) && hosterSelection.contains("mp4upload") -> {
-            mp4uploadExtractor.videosFromUrl(url, headers, suffix = " - $quality")
+    ): List<Video> {
+        val serverKey = server.lowercase(Locale.ROOT)
+        val urlKey = url.lowercase(Locale.ROOT)
+        fun matches(vararg keys: String) = keys.any { it in serverKey || it in urlKey }
+
+        return when {
+            matches("mp4upload") && hosterSelection.contains("mp4upload") -> {
+                mp4uploadExtractor.videosFromUrl(url, headers, suffix = " - $quality")
+            }
+
+            matches("pixeldrain") && hosterSelection.contains("pixeldrain") -> {
+                pixelDrainExtractor.videosFromUrl(url.substringBefore("?"), prefix = "$quality - ")
+            }
+
+            // StreamWish and FileLions share the same player implementation.
+            matches("streamwish", "filelions") && hosterSelection.contains("vidhide") -> {
+                streamWishExtractor.videosFromUrl(url) { q -> "StreamWish - $quality ($q)" }
+            }
+
+            matches("vidhide") && hosterSelection.contains("vidhide") -> {
+                vidHideExtractor.videosFromUrl(url) { q -> "VidHide - $quality ($q)" }
+            }
+
+            matches("dood", "d0000d", "do7go") && hosterSelection.contains("doodstream") -> {
+                doodExtractor.videosFromUrl(url, quality)
+            }
+
+            matches("yourupload") && hosterSelection.contains("yourupload") -> {
+                val yourUploadHeaders = headers.newBuilder().removeAll("Referer").build()
+                yourUploadExtractor.videoFromUrl(url, yourUploadHeaders, name = "YourUpload", prefix = "$quality - ")
+            }
+
+            else -> emptyList()
         }
-        ("pixeldrain" in server || "pixeldrain" in url) && hosterSelection.contains("pixeldrain") -> {
-            val cleanUrl = url.substringBefore("?")
-            pixelDrainExtractor.videosFromUrl(cleanUrl, prefix = "$quality - ")
-        }
-        ("vidhide" in server || "filelions" in server || "vidhide" in url || "filelions" in url || "streamwish" in url) &&
-            hosterSelection.contains("vidhide") -> {
-            vidHideExtractor.videosFromUrl(url) { q -> "VidHide - $quality ($q)" }
-        }
-        ("dood" in server || "d0000d" in url || "do7go" in url || "dood" in url) && hosterSelection.contains("doodstream") -> {
-            doodExtractor.videosFromUrl(url, quality)
-        }
-        ("yourupload" in server || "yourupload" in url) && hosterSelection.contains("yourupload") -> {
-            val yourUploadHeaders = headers.newBuilder().removeAll("Referer").build()
-            yourUploadExtractor.videoFromUrl(url, yourUploadHeaders, name = "YourUpload", prefix = "$quality - ")
-        }
-        else -> emptyList()
     }
 
     override fun videoFromElement(element: Element): Video = throw UnsupportedOperationException()
@@ -306,8 +308,8 @@ class Kuronime :
             compareByDescending<Video> { it.videoTitle.contains(quality) }
                 .thenByDescending { it.videoTitle.contains(server, ignoreCase = true) }
                 .thenBy { video ->
-                    val idx = SERVER_PRIORITY.indexOfFirst { video.videoTitle.contains(it, ignoreCase = true) }
-                    if (idx == -1) SERVER_PRIORITY.size else idx
+                    val idx = SERVER_ORDER.indexOfFirst { video.videoTitle.contains(it, ignoreCase = true) }
+                    if (idx == -1) SERVER_ORDER.size else idx
                 },
         )
     }
@@ -325,102 +327,70 @@ class Kuronime :
             ?: thumbnailElement?.attr("data-src")
 
         val titleElement = element.selectFirst("div.tt h2, div.tt h4, h2, h4")
-        anime.title = titleElement?.text()?.trim() ?: linkElement.attr("title").trim()
+        anime.title = titleElement?.text() ?: linkElement.attr("title").trim()
         return anime
+    }
+
+    private fun parseInfoMap(document: Document): Map<String, String> = document.select("div.infodetail ul li").associate { li ->
+        val text = li.text()
+        text.substringBefore(":").trim().lowercase(Locale.ROOT) to text.substringAfter(":").trim()
     }
 
     // ============================ Preferences =============================
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
-        val serverPref = ListPreference(screen.context).apply {
-            key = PREF_SERVER_KEY
-            title = PREF_SERVER_TITLE
-            entries = PREF_SERVER_ENTRIES
-            entryValues = PREF_SERVER_VALUES
-            setDefaultValue(PREF_SERVER_DEFAULT)
-            summary = "%s"
+        screen.addListPreference(
+            key = PREF_SERVER_KEY,
+            default = PREF_SERVER_DEFAULT,
+            title = PREF_SERVER_TITLE,
+            summary = "%s",
+            entries = SERVER_ORDER,
+            entryValues = SERVER_ORDER,
+        )
+        screen.addListPreference(
+            key = PREF_QUALITY_KEY,
+            default = PREF_QUALITY_DEFAULT,
+            title = PREF_QUALITY_TITLE,
+            summary = "%s",
+            entries = PREF_QUALITY_ENTRIES,
+            entryValues = PREF_QUALITY_VALUES,
+        )
 
-            setOnPreferenceChangeListener { _, newValue ->
-                val selected = newValue as String
-                val index = findIndexOfValue(selected)
-                val entry = entryValues[index] as String
-                preferences.edit().putString(key, entry).commit()
-            }
-        }
-        val videoQualityPref = ListPreference(screen.context).apply {
-            key = PREF_QUALITY_KEY
-            title = PREF_QUALITY_TITLE
-            entries = PREF_QUALITY_ENTRIES
-            entryValues = PREF_QUALITY_VALUES
-            setDefaultValue(PREF_QUALITY_DEFAULT)
-            summary = "%s"
-
-            setOnPreferenceChangeListener { _, newValue ->
-                val selected = newValue as String
-                val index = findIndexOfValue(selected)
-                val entry = entryValues[index] as String
-                preferences.edit().putString(key, entry).commit()
-            }
-        }
-        val hostSelection = MultiSelectListPreference(screen.context).apply {
-            key = PREF_HOSTER_KEY
-            title = PREF_HOSTER_TITLE
-            entries = PREF_HOSTER_ENTRIES
-            entryValues = PREF_HOSTER_VALUES
-            setDefaultValue(PREF_HOSTER_DEFAULT)
-        }
-        screen.addPreference(serverPref)
-        screen.addPreference(videoQualityPref)
-        screen.addPreference(hostSelection)
+        screen.addSetPreference(
+            key = PREF_HOSTER_KEY,
+            default = PREF_HOSTER_DEFAULT,
+            title = PREF_HOSTER_TITLE,
+            summary = "",
+            entries = PREF_HOSTER_ENTRIES.toList(),
+            entryValues = PREF_HOSTER_VALUES.toList(),
+        )
     }
 
     companion object {
+        private const val TAG = "Kuronime"
         private const val SOURCES_API_URL = "https://animeku.org/api/v9/sources"
         private const val DECRYPTION_KEY = "3&!Z0M,VIZ;dZW=="
 
         private val SCRIPT_PAYLOAD_REGEX = Regex("""var\s+_0x[a-f0-9]+\s*=\s*["']([A-Za-z0-9+/=]{20,})["']""")
-        private val EPISODE_REGEX = Regex("""(?i)(?:episode|eps\.?)\s*(\d+(?:\.\d+)?)""")
+        private val EPISODE_REGEX = Regex("""(?i)(?:episode|eps\.?)?\s*(\d+(?:\.\d+)?)""")
+
+        private val SERVER_ORDER = listOf("PixelDrain", "Mp4Upload", "VidHide", "YourUpload", "DoodStream")
 
         private const val PREF_SERVER_KEY = "preferred_server"
         private const val PREF_SERVER_TITLE = "Preferred server"
         private const val PREF_SERVER_DEFAULT = "PixelDrain"
-        private val PREF_SERVER_ENTRIES = arrayOf("PixelDrain", "Mp4Upload", "VidHide", "YourUpload", "DoodStream")
-        private val PREF_SERVER_VALUES = PREF_SERVER_ENTRIES
-
-        private val SERVER_PRIORITY = arrayOf("PixelDrain", "Mp4Upload", "VidHide", "YourUpload", "DoodStream")
 
         private const val PREF_QUALITY_KEY = "preferred_quality"
         private const val PREF_QUALITY_TITLE = "Preferred quality"
         private const val PREF_QUALITY_DEFAULT = "1080"
-        private val PREF_QUALITY_ENTRIES = arrayOf("1080p", "720p", "480p", "360p")
-        private val PREF_QUALITY_VALUES = arrayOf("1080", "720", "480", "360")
+        private val PREF_QUALITY_ENTRIES = listOf("1080p", "720p", "480p", "360p")
+        private val PREF_QUALITY_VALUES = listOf("1080", "720", "480", "360")
 
         private const val PREF_HOSTER_KEY = "hoster_selection"
         private const val PREF_HOSTER_TITLE = "Enable/Disable Hosts"
-        private val PREF_HOSTER_ENTRIES = arrayOf("PixelDrain", "Mp4Upload", "VidHide/FileLions", "YourUpload", "DoodStream")
+        private val PREF_HOSTER_ENTRIES = arrayOf("PixelDrain", "Mp4Upload", "VidHide/FileLions/StreamWish", "YourUpload", "DoodStream")
         private val PREF_HOSTER_VALUES = arrayOf("pixeldrain", "mp4upload", "vidhide", "yourupload", "doodstream")
-        private val PREF_HOSTER_DEFAULT = setOf("pixeldrain", "mp4upload", "vidhide", "yourupload", "doodstream")
+        private val PREF_HOSTER_DEFAULT = PREF_HOSTER_VALUES.toSet()
         private val DEPRECATED_HOSTS = setOf("animeku", "streamlare", "hxfile", "linkbox")
     }
 }
-
-@Serializable
-class SourceRequestDto(
-    val id: String,
-)
-
-@Serializable
-class SourceResponseDto(
-    val mirror: String,
-)
-
-@Serializable
-class CryptoDto(
-    val ct: String,
-    val s: String,
-)
-
-@Serializable
-class DecryptedEmbedDto(
-    val embed: Map<String, Map<String, String?>>? = null,
-)
