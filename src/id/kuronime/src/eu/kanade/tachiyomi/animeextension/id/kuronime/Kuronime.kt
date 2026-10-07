@@ -181,10 +181,19 @@ class Kuronime :
         return episode
     }
 
+    // Class-level per CONTRIBUTING.md#date-parsing - avoid reconstructing per episode.
+    private val dateFormatterId by lazy {
+        SimpleDateFormat("MMMM d, yyyy", Locale("id", "ID"))
+    }
+
+    private val dateFormatterEn by lazy {
+        SimpleDateFormat("MMMM d, yyyy", Locale.ENGLISH)
+    }
+
     private fun parseDate(dateStr: String?): Long {
         if (dateStr.isNullOrBlank()) return 0L
-        return SimpleDateFormat("MMMM d, yyyy", Locale("id", "ID")).tryParse(dateStr).takeIf { it > 0L }
-            ?: SimpleDateFormat("MMMM d, yyyy", Locale.ENGLISH).tryParse(dateStr)
+        return dateFormatterId.tryParse(dateStr).takeIf { it > 0L }
+            ?: dateFormatterEn.tryParse(dateStr)
     }
 
     // ============================ Video Links =============================
